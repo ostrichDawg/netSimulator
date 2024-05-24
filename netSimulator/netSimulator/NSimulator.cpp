@@ -46,33 +46,85 @@ void NSimulator::GetPacketsLoop()
         {
             ProccesARP(pkt_data, header->len);
         }
+        else if (IsICMP(pkt_data, header->len))
+        {
+            ProccessICMP(pkt_data, header->len);
+        }
     }
 }
 
-bool NSimulator::IsARP(const u_char* pkt_data, int pkt_size)
+inline bool NSimulator::IsARP(const u_char* pkt_data)
 {
     uint16_t* type = (uint16_t*)(pkt_data + PACKET_TYPE_POS);
 
-    if (*type == ARP_PACKET_TYPE)
-    {
-        return true;
-    }
-    else
-    {
-        return false;
-    }
+    return (ArpTypes)*type == ArpTypes::ARP;
 }
 
-void NSimulator::ProccesARP(const u_char* pkt_data, int pkt_size)
+inline bool NSimulator::IsICMP(const u_char* pkt_data, int pktSize)
 {
-    uint16_t* operation = (uint16_t*)(pkt_data + ARP_OPERATION_POS);
+    return false;
+}
 
-    switch (*operation)
+void NSimulator::ProccessICMP(const u_char* pkt_data, int pktSize)
+{
+}
+
+void NSimulator::ProccessArpRequest(const u_char* pkt_data)
+{
+    uint32_t* senderIP = (uint32_t*)(pkt_data + (int)ArpPositions::SENDER_IP);
+    MAC* senderMAC = (MAC*)(pkt_data + (int)ArpPositions::SENDER_MAC);
+
+    arpTable[*senderIP] = *senderMAC;
+
+    uint8_t reply[42];
+    memcpy(reply, senderMAC, sizeof(MAC));
+    memcpy(reply + sizeof(MAC), netFor[*senderIP].mac.bytes, sizeof(MAC));
+
+    reply[12] = 0x08;
+    reply[13] = 0x06;
+
+    reply[14] = 0x00;
+    reply[15] = 0x01;
+
+    reply[16] = 0x08;
+    reply[17] = 0x00;
+
+    reply[18] = 0x06;
+
+    reply[19] = 0x04;
+
+    reply[20] = 0x00;
+    reply[21] = 0x02;
+
+    memcpy(reply + (int)ArpPositions::SENDER_MAC, netFor[*senderIP].mac.bytes, sizeof(MAC));
+    memcpy(reply + (int)ArpPositions::SENDER_IP, &netFor[*senderIP].ip, sizeof(uint32_t));
+
+    memcpy(reply + (int)ArpPositions::TARGET_MAC, senderMAC->bytes, sizeof(MAC));
+    memcpy(reply + (int)ArpPositions::TARGET_IP, senderIP, sizeof(uint32_t));
+
+    pcap_sendpacket(adhandle, reply, 42);
+}
+
+void NSimulator::ProccessArpReply(const u_char* pkt_data)
+{
+    uint32_t* senderIP = (uint32_t*)(pkt_data + (int)ArpPositions::SENDER_IP);
+    MAC* senderMAC = (MAC*)(pkt_data + (int)ArpPositions::SENDER_MAC);
+
+    arpTable[*senderIP] = *senderMAC;
+}
+
+void NSimulator::ProccesARP(const u_char* pkt_data)
+{
+    uint16_t* operation = (uint16_t*)(pkt_data + (int)ArpPositions::OPERATION);
+
+    switch ((ArpTypes)(*operation))
     {
-    case ARP_REQUEST:
+    case ArpTypes::REQUEST:
+        ProccessArpRequest(pkt_data);
         break;
 
-    case ARP_REPLY:
+    case ArpTypes::REPLY:
+        ProccessArpReply(pkt_data);
         break;
 
     default:
