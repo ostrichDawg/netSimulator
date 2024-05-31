@@ -41,131 +41,135 @@ void NSimulator::GetPacketsLoop()
             /* Timeout elapsed */
             continue;
         }
-
-        if (IsArp(pkt_data))
+        
+        if (IsARP(pkt_data))
         {
-            ProccesArp(pkt_data);
+            ProccesARP(pkt_data);
         }
-        else if (IsIcmp(pkt_data, header->len))
+        else if (IsICMP(pkt_data))
         {
-            ProccessIcmp(pkt_data, header->len);
+            ProccessICMP(pkt_data, header->len);
         }
     }
 }
 
-inline bool NSimulator::IsArp(const u_char* pkt_data)
+inline bool NSimulator::IsARP(const void* pkt_data)
 {
-    uint16_t* type = (uint16_t*)(pkt_data + ETH_TYPE_POS);
-
-    return (ArpTypes)*type == ArpTypes::ARP;
+    EthHeader* ethHeader = (EthHeader*)(pkt_data);
+    return ethHeader->proto == (uint16_t)EthTypes::ARP;
 }
 
-inline bool NSimulator::IsIcmp(const u_char* pkt_data, int pktSize)
+inline bool NSimulator::IsICMP(const void* pkt_data)
 {
-    return pkt_data[IP4_TYPE_POS] == (uint8_t)IcmpTypes::ICMP;
+    Ip4Frame* frame = (Ip4Frame*)(pkt_data);
+    return frame->protocol == (uint16_t)IP4Types::ICMP;
 }
 
-void NSimulator::ProccessIcmp(const u_char* pkt_data, int pktSize)
+void NSimulator::ProccessICMP(const void* pkt_data, int pktSize)
 {
-    switch (pkt_data[ (int)IcmpPositions::TYPE ])
+    IcmpFrame* frame = (IcmpFrame*) pkt_data;
+
+    switch ((IcmpTypes)frame->type)
     {
-    case (uint8_t) IcmpTypes::REQUEST :
-        ProccessIcmpRequest(pkt_data, pktSize);
+    case IcmpTypes::REQUEST:
+        ProccessICMPRequest(pkt_data, pktSize);
         break;
-        
-    case (uint8_t) IcmpTypes::REPLY :
+    case IcmpTypes::REPLY:
+        ProccessICMPReply(pkt_data, pktSize);
         break;
-
     default:
         break;
     }
 }
 
-void NSimulator::ProccessIcmpRequest(const u_char* pkt_data, int pktSize)
+void NSimulator::ProccessICMPRequest(const void* pkt_data, int pktSize)
 {
-    uint32_t senderIP = *((uint32_t*)(pkt_data + IP4_SENDER_POS));
-    uint32_t destinIP = *((uint32_t*)(pkt_data + IP4_DESTIN_POS));
-    uint16_t ip4Ident = *((uint32_t*)(pkt_data + IP4_IDENTI_POS));
-    ++ip4Ident;
+    IcmpFrame* request = (IcmpFrame*)pkt_data;
 
-    /*
-    if (arpTable.find(senderIP) == arpTable.end())
-    {
-        return;
-    }
-    */   
+    std::vector<uint8_t> replyRAW(pktSize);
+    IcmpFrame* reply = (IcmpFrame*) replyRAW.data();
 
-    std::vector<uint8_t> reply(pktSize);
-    memcpy(reply.data(), pkt_data + 6, 6);
-    memcpy(reply.data() + 6, pkt_data, 6);
+    // Prepare reply ETH header
+    memcpy(reply->dst, request->src, sizeof(MAC));
+    memcpy(reply->src, request->dst, sizeof(MAC));
+    reply->proto = (uint16_t)EthTypes::IP4;
 
-    memcpy(reply.data() + 12, pkt_data + 12, 6);
-    memcpy(reply.data() + 18, &ip4Ident, 2);
-    memcpy(reply.data() + 20, pkt_data + 19, 4);
+    // Prepare reply IP4 header
+    reply->version = 0x4;
+    reply->ip4HeaderLen = 0x5;
+    reply->difSer = 0x00;
+    reply->totalLen = request->totalLen;
+    reply->identification = request->identification + 1;
+    reply->flags = 0x0000;
+    reply->ttl = 128;
+    reply->protocol = (uint8_t)IP4Types::ICMP;
+    /////////////////////////////////////////////////////////
+    memcpy(reply->srcIP, request->dstIP, 4);    // need to get
+    memcpy(reply->dstIP, request->srcIP, 4);    // need to get
     
-    reply[24] = 0x00;
-    reply[25] = 0x00;
+    reply->headerCSum = 0x0000;          // NEED TO COUNT
+    /////////////////////////////////////////////////////////
 
-    memcpy(reply.data() + IP4_SENDER_POS, &destinIP, 4);
-    memcpy(reply.data() + IP4_DESTIN_POS, &senderIP, 4);
+    // Prepare reply ICMP header
+    reply->type = (uint8_t)IcmpTypes::REPLY;
+    reply->code = 0x00;
+    reply->identifier = request->identifier;  
+    reply->seqNum = request->seqNum;  
+    reply->checkSum = 0xf928;  // NEED TO COUNT
 
+    memcpy(replyRAW.data() + sizeof(IcmpFrame), ((uint8_t*) pkt_data) + sizeof(IcmpFrame), pktSize - sizeof(IcmpFrame));
+    pcap_sendpacket(adhandle, replyRAW.data(), pktSize);
 }
 
-void NSimulator::ProccessArpRequest(const u_char* pkt_data)
+inline void NSimulator::ProccessICMPReply(const void* pkt_data, int pktSize)
 {
-    uint32_t* senderIP = (uint32_t*)(pkt_data + (int)ArpPositions::SENDER_IP);
-    MAC* senderMAC = (MAC*)(pkt_data + (int)ArpPositions::SENDER_MAC);
-
-    arpTable[*senderIP] = *senderMAC;
-
-    uint8_t reply[42];
-    memcpy(reply, senderMAC, sizeof(MAC));
-    memcpy(reply + sizeof(MAC), netFor[*senderIP].mac.bytes, sizeof(MAC));
-
-    reply[12] = 0x08;
-    reply[13] = 0x06;
-
-    reply[14] = 0x00;
-    reply[15] = 0x01;
-
-    reply[16] = 0x08;
-    reply[17] = 0x00;
-
-    reply[18] = 0x06;
-
-    reply[19] = 0x04;
-
-    reply[20] = 0x00;
-    reply[21] = 0x02;
-
-    memcpy(reply + (int)ArpPositions::SENDER_MAC, netFor[*senderIP].mac.bytes, sizeof(MAC));
-    memcpy(reply + (int)ArpPositions::SENDER_IP, &netFor[*senderIP].ip, sizeof(uint32_t));
-
-    memcpy(reply + (int)ArpPositions::TARGET_MAC, senderMAC->bytes, sizeof(MAC));
-    memcpy(reply + (int)ArpPositions::TARGET_IP, senderIP, sizeof(uint32_t));
-
-    pcap_sendpacket(adhandle, reply, 42);
 }
 
-void NSimulator::ProccessArpReply(const u_char* pkt_data)
+void NSimulator::ProccessArpRequest(const void* pkt_data)
 {
-    uint32_t* senderIP = (uint32_t*)(pkt_data + (int)ArpPositions::SENDER_IP);
-    MAC* senderMAC = (MAC*)(pkt_data + (int)ArpPositions::SENDER_MAC);
+    ArpFrame* request = (ArpFrame*)pkt_data;
+    
+    arpTable[request->senderIP] = *( (MAC*)request->senderMAC );
 
-    arpTable[*senderIP] = *senderMAC;
+    ArpFrame reply;    
+
+    NetCFG hostData = netFor[request->senderIP];
+
+    memcpy(reply.dst, request->senderMAC, sizeof(MAC));
+    memcpy(reply.src, hostData.mac.bytes, sizeof(MAC));
+    
+    reply.proto = (uint16_t)EthTypes::ARP;
+    reply.hardware = 0x0100;
+    reply.protocol = 0x0008;
+    reply.hardwareSize = 0x06;
+    reply.protocolSize = 0x04;
+    reply.opcode = (uint16_t)ArpTypes::REPLY; 
+
+    memcpy(reply.senderMAC, hostData.mac.bytes, sizeof(MAC));
+    reply.senderIP = hostData.ip;
+
+    memcpy(reply.targetMAC, request->senderMAC, sizeof(MAC));
+    reply.targetIP = request->senderIP;
+
+    pcap_sendpacket(adhandle, (const uint8_t*) &reply, sizeof(ArpFrame));
 }
 
-void NSimulator::ProccesArp(const u_char* pkt_data)
+void NSimulator::ProccessArpReply(const void* pkt_data)
 {
-    uint16_t* operation = (uint16_t*)(pkt_data + (int)ArpPositions::OPERATION);
+    ArpFrame* reply = (ArpFrame*)(pkt_data);
+    arpTable[reply->senderIP] = *( (MAC*)reply->senderMAC );
+}
 
-    switch ((ArpTypes)(*operation))
+void NSimulator::ProccesARP(const void* pkt_data)
+{
+    ArpFrame* frame = (ArpFrame*)(pkt_data);
+
+    switch ((ArpTypes)(frame->opcode))
     {
-    case ArpTypes::REQUEST:
+    case ArpTypes::REQUEST :
         ProccessArpRequest(pkt_data);
         break;
-
-    case ArpTypes::REPLY:
+    case ArpTypes::REPLY :
         ProccessArpReply(pkt_data);
         break;
 
@@ -209,7 +213,7 @@ void NSimulator::PrintDevicesList(pcap_if_t* alldevs)
 void NSimulator::SelectDevice(pcap_if_t* alldevs)
 {
     int deviceNumber = 0;
-    std::cout << "Enter the interface number (1 -" << numberOfDevices << "): ";
+    std::cout << "Enter the interface number (1 - " << numberOfDevices << "): ";
     std::cin >> deviceNumber;   
     
     if (deviceNumber < 1 || deviceNumber > numberOfDevices)
@@ -225,8 +229,7 @@ void NSimulator::SelectDevice(pcap_if_t* alldevs)
     /* Open the device */
     if ((adhandle = pcap_open(device->name,          // name of the device
         65536,            // portion of the packet to capture. 
-        // 65536 guarantees that the whole packet will be captured on all the link layers
-        PCAP_OPENFLAG_PROMISCUOUS,    // promiscuous mode
+        PCAP_OPENFLAG_NOCAPTURE_LOCAL,    
         1000,             // read timeout
         NULL,             // authentication on the remote machine
         errbuf            // error buffer
